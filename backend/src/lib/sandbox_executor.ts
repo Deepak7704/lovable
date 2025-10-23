@@ -1,152 +1,250 @@
 import { Result, Sandbox } from "@e2b/code-interpreter";
 import { FileOperation } from "../types";
-import { exitCode } from "process";
-import { tr } from "zod/locales";
 
-export class SandboxExecutor{
-    //excutes a single file operation in the sandbox
-    async executeFileOperation(sandbox : Sandbox,operation : FileOperation):Promise<void>{
-        console.log(`Executing ${operation.type}:${operation.path}`);
-        switch(operation.type){
+export class SandboxExecutor {
+    // Execute a single file operation in the sandbox
+    async executeFileOperation(sandbox: Sandbox, operation: FileOperation): Promise<void> {
+        console.log(`Executing ${operation.type}: ${operation.path}`);
+        
+        switch (operation.type) {
             case 'createFile':
-            case 'rewriteFile':{
-                // to ensure the directory exits
-                const dir = operation.path.substring(0,operation.path.lastIndexOf('/'));
-                if(dir && dir !== 'src' && dir !== ''){
+            case 'rewriteFile': {
+                // Ensure the directory exists
+                const dir = operation.path.substring(0, operation.path.lastIndexOf('/'));
+                if (dir && dir !== 'src' && dir !== '') {
                     await sandbox.commands.run(`mkdir -p ${dir}`);
                 }
 
-                // write file content 
-                await sandbox.files.write(operation.path,operation.content);
-                console.log(`${operation.type} is executed on this ${operation.path}`);
-
+                // Write file content
+                await sandbox.files.write(operation.path, operation.content);
+                console.log(`${operation.type} executed on ${operation.path}`);
                 break;
             }
-            case 'updateFile':{
+
+            case 'updateFile': {
                 let content = await sandbox.files.read(operation.path);
-                for (const {search,replace} of operation.serachReplace){
-                    const regex = RegExp(search,'g');
-                    content = content.replace(regex,replace);
+                for (const { search, replace } of operation.searchReplace) {
+                    const regex = RegExp(search, 'g');
+                    content = content.replace(regex, replace);
                 }
-                await sandbox.files.write(operation.path,content);
-                console.log(`updated file : ${operation.path}`);
+                await sandbox.files.write(operation.path, content);
+                console.log(`Updated file: ${operation.path}`);
                 break;
             }
-            case 'deleteFile':{
+
+            case 'deleteFile': {
                 await sandbox.commands.run(`rm ${operation.path}`);
-                console.log(`Deleted file:${operation.path}`);
+                console.log(`Deleted file: ${operation.path}`);
                 break;
             }
         }
     }
 
-    // execute a shell command safely 
-    async executeShellCommands(sandbox:Sandbox,command:string):Promise<{exitCode:number;stdout:string,stderr:string}>{
-        if(!this.isSafeCommand(command)){
-            throw new Error(`Unsafe command rejected ${command}`);
+    // Execute a shell command safely with retry logic and optimization
+    async executeShellCommands(
+        sandbox: Sandbox,
+        command: string,
+        maxRetries: number = 3
+    ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+        if (!this.isSafeCommand(command)) {
+            throw new Error(`Unsafe command rejected: ${command}`);
         }
-        console.log(`Executing command ${command}`);
-        const result = await sandbox.commands.run(command,{
-            timeoutMs:180000,
-        });
-        if(result.exitCode !== 0){
-            console.error(`Command Failed to execute ${result.exitCode}`);
-            console.error('stderr',result.stderr);
-        }else{
-            console.log(`command completed:${command}`)
+
+        // Dynamic timeout based on command type
+        let timeoutMs = 180000; // 3 minutes default
+
+        if (command.includes('npm install') || command.includes('npm i ')) {
+            // Extract package count for dynamic scaling
+            const packageCount = command
+                .split(' ')
+                .filter(p => 
+                    !p.startsWith('-') && 
+                    p !== 'npm' && 
+                    p !== 'install' && 
+                    p !== 'i' &&
+                    p.trim() !== ''
+                ).length;
+
+            // Scale timeout: 5 minutes base + 1 minute per package
+            timeoutMs = Math.max(300000, 300000 + (packageCount * 60000));
+            console.log(`Installing ${packageCount} package(s) with ${timeoutMs / 1000}s timeout`);
         }
-        return {
-            exitCode : result.exitCode,
-            stdout:result.stdout,
-            stderr : result.stderr
+
+        // Optimize npm install commands with flags
+        let optimizedCommand = command;
+        if (command.includes('npm install') && !command.includes('--prefer-offline')) {
+            optimizedCommand = command.replace(
+                'npm install',
+                'npm install --prefer-offline --legacy-peer-deps'
+            );
+            console.log(`Optimized command: ${optimizedCommand}`);
         }
+
+        let lastError: Error | null = null;
+
+        // Retry loop with multiple strategies
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                console.log(`Executing command (attempt ${attempt}/${maxRetries}): ${optimizedCommand}`);
+
+                const result = await sandbox.commands.run(optimizedCommand, {
+                    timeoutMs: timeoutMs,
+                });
+
+                if (result.exitCode !== 0) {
+                    console.error(`Command failed with exit code ${result.exitCode}`);
+                    console.error('stderr:', result.stderr);
+
+                    // Try different strategies on npm failures
+                    if (attempt < maxRetries && command.includes('npm install')) {
+                        // Strategy 1: Remove --prefer-offline (force network fetch)
+                        if (optimizedCommand.includes('--prefer-offline')) {
+                            optimizedCommand = optimizedCommand
+                                .replace('--prefer-offline', '')
+                                .replace(/\s+/g, ' ');
+                            console.log(`Retry without cache: ${optimizedCommand}`);
+                            
+                            // Wait before retry (exponential backoff)
+                            await new Promise(resolve => setTimeout(resolve, attempt * 3000));
+                            continue;
+                        }
+
+                        // Strategy 2: Try with --force flag
+                        if (!optimizedCommand.includes('--force')) {
+                            optimizedCommand = optimizedCommand + ' --force';
+                            console.log(`Retry with --force: ${optimizedCommand}`);
+                            
+                            await new Promise(resolve => setTimeout(resolve, attempt * 3000));
+                            continue;
+                        }
+                    }
+
+                    // Non-npm commands or exhausted retries - return failure
+                    return {
+                        exitCode: result.exitCode,
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                    };
+                }
+
+                console.log(`Command completed successfully: ${optimizedCommand}`);
+                return {
+                    exitCode: result.exitCode,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                };
+
+            } catch (error) {
+                lastError = error as Error;
+                console.error(`Command execution error (attempt ${attempt}/${maxRetries}):`, error);
+
+                if (attempt < maxRetries) {
+                    // Exponential backoff: 3s, 6s, 9s
+                    const waitTime = attempt * 3000;
+                    console.log(`Waiting ${waitTime / 1000}s before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
+                }
+            }
+        }
+
+        throw lastError || new Error(`Command failed after ${maxRetries} attempts: ${command}`);
     }
-    //start a vite server and return a public url that helpst to load the preview url
 
-    async startDevServer(sandbox:Sandbox):Promise<string>{
+    // Start a vite server and return a public URL
+    async startDevServer(sandbox: Sandbox): Promise<string> {
         console.log('Starting vite dev server...');
-
-        await sandbox.commands.run('npm run dev &',{
-            background:true
+        
+        await sandbox.commands.run('npm run dev &', {
+            background: true,
         });
-        //waiting for the server to be ready
-        await this.waitForServer(sandbox,3000,40);
-        const previewUrl = sandbox.getHost(3000);
-        console.log(`Dev server ready at :${previewUrl}`);
 
+        // Wait for the server to be ready
+        await this.waitForServer(sandbox, 3000, 40);
+
+        const previewUrl = sandbox.getHost(3000);
+        console.log(`Dev server ready at: ${previewUrl}`);
         return previewUrl;
     }
 
-    async getFileTree(sandbox:Sandbox): Promise<Array<{path:string,type:'file'|'directory'}>>{
+    // Get file tree from sandbox
+    async getFileTree(sandbox: Sandbox): Promise<Array<{ path: string; type: 'file' | 'directory' }>> {
         const result = await sandbox.commands.run(
             'find . -type f \\( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.json" -o -name "*.css" -o -name "*.html" \\) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" | head -100'
         );
-    const paths = result.stdout
-      .split('\n')
-      .filter(p => p && p.trim() !== '')
-      .map(p => p.replace('./', ''));
-       return paths.map(path => ({
+
+        const paths = result.stdout
+            .split('\n')
+            .filter(p => p && p.trim() !== '')
+            .map(p => p.replace('./', ''));
+
+        return paths.map(path => ({
             path,
             type: 'file',
         }));
     }
 
-    //Read the file content from the sandbox
-    async readFile(sandbox:Sandbox,path:string):Promise<string>{
+    // Read the file content from the sandbox
+    async readFile(sandbox: Sandbox, path: string): Promise<string> {
         return await sandbox.files.read(path);
     }
 
-    private isSafeCommand(command:string):boolean{
+    // Check if a command is safe to execute
+    private isSafeCommand(command: string): boolean {
         const allowedPatterns = [
-                /^npm install(\s|$)/,
-                /^npm run dev(\s|$)/,
-                /^npm run build(\s|$)/,
-                /^npx\s/,
-                /^yarn add(\s|$)/,
-                /^pnpm install(\s|$)/,];
-            const dangerousPatterns = [
-                /rm\s+-rf\s+\//,
-                /sudo/,
-                /curl.*\|.*sh/,
-                /wget.*\|.*sh/,
-                />.*\/dev\//,
-                /mkfs/,
-                /dd\s+if=/,
-            ];
+            /^npm install(\s|$)/,
+            /^npm i(\s|$)/,
+            /^npm run dev(\s|$)/,
+            /^npm run build(\s|$)/,
+            /^npx\s/,
+            /^yarn add(\s|$)/,
+            /^pnpm install(\s|$)/,
+            /^pnpm add(\s|$)/,
+        ];
 
-            const isAllowed = allowedPatterns.some(re => re.test(command));
-            const isDangerous = dangerousPatterns.some(re => re.test(command));
+        const dangerousPatterns = [
+            /rm\s+-rf\s+\//,
+            /sudo/,
+            /curl.*\|.*sh/,
+            /wget.*\|.*sh/,
+            />.*\/dev\//,
+            /mkfs/,
+            /dd\s+if=/,
+        ];
 
-            return isAllowed && !isDangerous;
+        const isAllowed = allowedPatterns.some(re => re.test(command));
+        const isDangerous = dangerousPatterns.some(re => re.test(command));
+
+        return isAllowed && !isDangerous;
     }
-    //wait for server to be ready on specified port
+
+    // Wait for server to be ready on specified port
     private async waitForServer(
         sandbox: Sandbox,
         port: number,
         maxAttempts: number = 30
     ): Promise<void> {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-            const result = await sandbox.commands.run(
-            `curl -s -o /dev/null -w "%{http_code}" http://localhost:${port}`,
-            { timeoutMs: 5000 }
-            );
+            try {
+                const result = await sandbox.commands.run(
+                    `curl -s -o /dev/null -w "%{http_code}" http://localhost:${port}`,
+                    { timeoutMs: 5000 }
+                );
 
-            const statusCode = result.stdout.trim();
-            if (statusCode === '200' || result.exitCode === 0) {
-            console.log(`Server responded after ${attempt} attempts`);
-            return;
+                const statusCode = result.stdout.trim();
+                if (statusCode === '200' || result.exitCode === 0) {
+                    console.log(`Server responded after ${attempt} attempts`);
+                    return;
+                }
+            } catch (error) {
+                // Server not ready yet, continue waiting
             }
-        } catch (error) {
-            // Server not ready yet
-        }
 
-        // Wait before next attempt
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        if (attempt % 10 === 0) {
-            console.log(`Still waiting for server... (${attempt}/${maxAttempts})`);
-        }
+            // Wait before next attempt
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            if (attempt % 10 === 0) {
+                console.log(`Still waiting for server... (${attempt}/${maxAttempts})`);
+            }
         }
 
         throw new Error(`Dev server failed to start after ${maxAttempts} attempts`);

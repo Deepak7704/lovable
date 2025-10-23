@@ -69,6 +69,19 @@ router.post('/chat', async (req, res) => {
         console.log('✓ AI generation completed');
         console.log(`Generated ${generation.fileOperations.length} file operations`);
 
+        // CRITICAL FIX: Detect and auto-add missing packages
+        const missingPackages = detectMissingPackages(generation);
+        if (missingPackages.length > 0) {
+          console.warn('⚠ Warning: Detected imported packages not in shellCommands:', missingPackages);
+          // Auto-add missing packages to shellCommands
+          const installCommand = `npm install ${missingPackages.join(' ')}`;
+          if (!generation.shellCommands) {
+            generation.shellCommands = [];
+          }
+          generation.shellCommands.push(installCommand);
+          console.log(`✓ Auto-added: ${installCommand}`);
+        }
+
         try {
           // Step 5: Execute file operations
           console.log('Step 4: Executing file operations');
@@ -79,8 +92,8 @@ router.post('/chat', async (req, res) => {
           }
           console.log('✓ All file operations completed');
 
-          // Step 6: Execute shell commands
-          if (generation.shellCommands.length > 0) {
+          // Step 6: Execute shell commands (including auto-detected packages)
+          if (generation.shellCommands && generation.shellCommands.length > 0) {
             console.log('Step 5: Executing shell commands');
             for (const command of generation.shellCommands) {
               console.log(`  Running: ${command}`);
@@ -134,7 +147,73 @@ router.post('/chat', async (req, res) => {
 });
 
 /**
- * Build comprehensive prompt for AI
+ * Detect packages imported in code but not included in shellCommands
+ */
+function detectMissingPackages(generation: any): string[] {
+  const standardPackages = new Set([
+    'react', 
+    'react-dom', 
+    'vite', 
+    'tailwindcss', 
+    'typescript', 
+    '@vitejs/plugin-react', 
+    '@types/react', 
+    '@types/react-dom'
+  ]);
+  
+  const externalPackages = new Set<string>();
+  
+  // Check all file operations for imports
+  for (const op of generation.fileOperations) {
+    if (op.content) {
+      // Match: import ... from "package" or import ... from 'package'
+      const importMatches = op.content.match(/import\s+.*?from\s+['"]([^'"]+)['"]/g);
+      if (importMatches) {
+        for (const match of importMatches) {
+          const packageMatch = match.match(/from\s+['"]([^'"]+)['"]/);
+          if (packageMatch) {
+            const packageName = packageMatch[1];
+            // Only external packages (not relative imports like './Component')
+            if (!packageName.startsWith('.') && !packageName.startsWith('/')) {
+              // Extract base package name (handle @scoped packages)
+              const basePkg = packageName.startsWith('@') 
+                ? packageName.split('/').slice(0, 2).join('/')
+                : packageName.split('/')[0];
+              
+              if (!standardPackages.has(basePkg)) {
+                externalPackages.add(basePkg);
+                
+                // Add @types package if needed and not already a types package
+                if (!basePkg.startsWith('@types/')) {
+                  externalPackages.add(`@types/${basePkg}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Check what's already in shellCommands
+  const existingPackages = new Set<string>();
+  for (const cmd of generation.shellCommands || []) {
+    const packages = cmd.match(/npm\s+(?:install|i)\s+(.+)/);
+    if (packages) {
+      packages[1].split(/\s+/).forEach((pkg: string) => {
+        if (!pkg.startsWith('-')) {
+          existingPackages.add(pkg);
+        }
+      });
+    }
+  }
+  
+  // Return packages that are imported but not in shellCommands
+  return Array.from(externalPackages).filter(pkg => !existingPackages.has(pkg));
+}
+
+/**
+ * Build comprehensive prompt for AI with strong package installation instructions
  */
 function buildPrompt(
   userPrompt: string,
@@ -153,6 +232,35 @@ ${fileList || 'Empty project (only boilerplate)'}
 USER REQUEST:
 ${userPrompt}
 
+CRITICAL PACKAGE INSTALLATION RULES:
+- Standard packages already available: react, react-dom, vite, tailwindcss, typescript, @vitejs/plugin-react
+- If you import ANY other package (uuid, axios, react-router-dom, date-fns, etc.), you MUST add it to shellCommands
+- Format: "npm install package-name1 package-name2 package-name3" (batch multiple packages together)
+- ALWAYS include both the package and its @types version if applicable
+
+EXAMPLES OF REQUIRED shellCommands:
+- If you use: import { v4 as uuidv4 } from 'uuid'
+  Then include: ["npm install uuid @types/uuid"]
+  
+- If you use: import axios from 'axios'
+  Then include: ["npm install axios"]
+  
+- If you use: import { BrowserRouter } from 'react-router-dom'
+  Then include: ["npm install react-router-dom @types/react-router-dom"]
+
+- If you use multiple packages:
+  Then include: ["npm install uuid axios date-fns @types/uuid"]
+
+CRITICAL IMAGE USAGE RULES - UNSPLASH ONLY:
+- MANDATORY: ALL images MUST use valid Unsplash images
+
+- INVALID (DO NOT USE):
+  ✗ placeholder.com, via.placeholder.com, placehold.it
+  ✗ example.com/image.jpg
+  ✗ /images/photo.jpg (local paths)
+  ✗ Generic or fake URLs
+
+
 INSTRUCTIONS:
 1. Generate modern, clean React components using TypeScript
 2. Use Tailwind CSS for all styling (no external CSS files unless necessary)
@@ -160,18 +268,30 @@ INSTRUCTIONS:
 4. Use functional components with proper TypeScript types
 5. Ensure code is production-ready and well-structured
 6. Only create/modify files that are necessary for the user's request
-7. If installing new packages, add them to shellCommands
+7. MANDATORY: Review all your imports and add required packages to shellCommands
+8. MANDATORY: Use ONLY valid Unsplash image URLs
 
 OUTPUT REQUIREMENTS:
 - fileOperations: Array of operations (createFile, rewriteFile, updateFile, deleteFile)
-- shellCommands: Only include if you need to install new packages (e.g., "npm install react-router-dom")
+- shellCommands: Array of npm install commands for ANY imported packages not in the base template
+  * MUST be empty array [] ONLY if no new packages are imported
+  * If ANY external package is used, it MUST be in shellCommands
 - explanation: A brief, user-friendly explanation of what you created
+
+VERIFICATION BEFORE RESPONDING:
+1. List all import statements in your code
+2. Check if each imported package is in the standard packages list
+3. For each non-standard package, ensure it's in shellCommands
+4. If you forgot a package, ADD IT NOW to shellCommands
+
 
 IMPORTANT:
 - File paths should be relative to project root (e.g., "src/components/Button.tsx")
 - Include complete file content, not snippets
 - Ensure all imports are correct
-- Use proper TypeScript types`;
+- Use proper TypeScript types
+- NEVER skip packages in shellCommands - this causes build failures
+- NEVER use placeholder image services - ONLY Unsplash URLs are acceptable`;
 }
 
 export default router;

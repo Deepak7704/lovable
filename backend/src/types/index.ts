@@ -15,7 +15,7 @@ export const FileOperationSchema = z.discriminatedUnion('type',[
     z.object({
         type : z.literal('updateFile'),
         path : z.string().describe('File path to update'),
-        serachReplace: z.array(z.object({
+        searchReplace: z.array(z.object({
             search : z.string().describe('Text to search for'),
             replace : z.string().describe('Text to replace with'),
         })).describe('Array of search/replace operations'),
@@ -26,7 +26,15 @@ export const FileOperationSchema = z.discriminatedUnion('type',[
     }),
 ]);
 
+// this app context schema allows the ai to self-identify what type of application it's building
+export const AppContextSchema = z.object({
+    appType : z.string().describe('Type of application being built (e.g., ecommerce, blog, dashboard, portfolio, social-media, booking-system)'),
+    primaryEntities : z.array(z.string()).describe('Main entities/resources in the app (e.g., products, posts, users, bookings)'),
+    imageKeywords: z.array(z.string()).describe('Unsplash search keywords relevant to the app content (e.g., ["technology", "gadgets"] for tech store)')
+})
+
 export const GenerationSchema = z.object({
+    appContext: AppContextSchema.optional().describe('Context about the application being built for dynamic image and styling decisions'),
     fileOperations : z.array(FileOperationSchema).describe('Array of file operations to execute in order'),
     shellCommands : z.array(z.string()).describe('Shell commands to run (e.g., npm install package-name)'),
     explanation : z.string().describe('Brief explanation of what was created or modified'),

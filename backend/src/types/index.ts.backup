@@ -1,7 +1,7 @@
 // File operation schemas for zod validation
 import { z } from "zod";
 
-export const FileOperationSchema = z.discriminatedUnion('type',[ 
+export const FileOperationSchema = z.discriminatedUnion('type',[
     z.object({
         type : z.literal('createFile'),
         path : z.string().describe('File path relative to project root'),
@@ -39,11 +39,6 @@ export const GenerationSchema = z.object({
     shellCommands : z.array(z.string()).describe('Shell commands to run (e.g., npm install package-name)'),
     explanation : z.string().describe('Brief explanation of what was created or modified'),
 });
-
-export const ProjectTreeSchema = z.array(z.object({
-    path: z.string(),
-    type: z.enum(['file', 'directory'])
-}));
 
 
 export type FileOperation = z.infer<typeof FileOperationSchema>

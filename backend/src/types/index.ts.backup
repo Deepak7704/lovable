@@ -1,7 +1,7 @@
 // File operation schemas for zod validation
 import { z } from "zod";
 
-export const FileOperationSchema = z.discriminatedUnion('type',[ 
+export const FileOperationSchema = z.discriminatedUnion('type',[
     z.object({
         type : z.literal('createFile'),
         path : z.string().describe('File path relative to project root'),
@@ -40,17 +40,9 @@ export const GenerationSchema = z.object({
     explanation : z.string().describe('Brief explanation of what was created or modified'),
 });
 
-export const ProjectTreeSchema = z.array(
-    z.object({
-        path: z.string(),
-        type: z.enum(['file', 'directory'])
-    })
-);
-
 
 export type FileOperation = z.infer<typeof FileOperationSchema>
 export type GenerateOutput = z.infer<typeof GenerationSchema>
-export type ProjectTree = z.infer<typeof ProjectTreeSchema>
 
 // custom data messsages for the status of the code 
 export interface OperatioStatusData{

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { apiLimiter } from '../server';
 import { streamObject } from 'ai';
 import gemini from '../lib/ai_config';
 import { SandboxManager } from '../lib/sandbox_manager';
@@ -10,7 +11,7 @@ const router = Router();
 const sandboxManager = new SandboxManager();
 const executor = new SandboxExecutor();
 
-router.post('/chat', async (req, res) => {
+router.post('/chat', apiLimiter, async (req, res) => {
   try {
     const { messages, projectId: existingProjectId } = req.body;
 

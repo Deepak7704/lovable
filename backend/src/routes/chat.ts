@@ -5,12 +5,21 @@ import { SandboxManager } from '../lib/sandbox_manager';
 import { SandboxExecutor } from '../lib/sandbox_executor';
 import { GenerationSchema } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import rateLimit from 'express-rate-limit';
 
 const router = Router();
 const sandboxManager = new SandboxManager();
 const executor = new SandboxExecutor();
 
-router.post('/chat', async (req, res) => {
+const chatLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 5, // Limit each IP to 5 requests per minute
+    message: 'Too many chat requests from this IP, please try again after a minute.',
+    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+    legacyHeaders: false // Disable the `X-RateLimit-*` headers
+});
+
+router.post('/chat', chatLimiter, async (req, res) => {
   try {
     const { messages, projectId: existingProjectId } = req.body;
 

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { streamObject } from 'ai';
 import gemini from '../lib/ai_config';
 import { SandboxManager } from '../lib/sandbox_manager';
@@ -10,7 +11,15 @@ const router = Router();
 const sandboxManager = new SandboxManager();
 const executor = new SandboxExecutor();
 
-router.post('/chat', async (req, res) => {
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  message: 'Too many chat requests from this IP, please try again after a minute',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+router.post('/chat', chatLimiter, async (req, res) => {
   try {
     const { messages, projectId: existingProjectId } = req.body;
 

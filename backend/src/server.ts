@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import router from './routes/chat';
+import { chatRateLimiter } from './middleware/rateLimiter';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,6 +19,7 @@ app.use((req,res,next)=>{
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
     next();
 });
+app.use('/api/chat', chatRateLimiter);
 app.use('/api',router);
 
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

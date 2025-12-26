@@ -5,12 +5,13 @@ import { SandboxManager } from '../lib/sandbox_manager';
 import { SandboxExecutor } from '../lib/sandbox_executor';
 import { GenerationSchema } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import { apiLimiter } from '../server';
 
 const router = Router();
 const sandboxManager = new SandboxManager();
 const executor = new SandboxExecutor();
 
-router.post('/chat', async (req, res) => {
+router.post('/chat', apiLimiter, async (req, res) => {
   try {
     const { messages, projectId: existingProjectId } = req.body;
 
